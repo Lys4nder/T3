@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 
-"""Compare and save evaluation results for T3 vs an XGBoost variant.
+"""Compare and save evaluation results for T3, XGBoost, and CatBoost variants (compiled & uncompiled).
 
 This is a *report generator* meant to make results easier to interpret than console-only output.
 
 What it does:
 - Trains the original T3 model (LightGBM) using the repo's normal pipeline.
-- Optionally trains an XGBoost variant on the *same* per-tuple pipeline dataset.
-- Evaluates both models on:
+- Compiles the T3 model (if lleaves is available).
+- Trains an XGBoost variant and compiles it (if available).
+- Trains a CatBoost variant and compiles it natively to C++ (if available).
+- Evaluates all models on:
   - the same slices used by the paper's accuracy table
   - the full benchmark corpus (all DBs)
 - Saves detailed per-query results and summary statistics to a timestamped folder.
@@ -20,9 +22,6 @@ Run (from repo root):
 Optional:
 
   python compare.py --topk 100 --outdir compare_output
-
-Notes:
-- If XGBoost isn't installed, the script will still run the T3 baseline and note that XGBoost was skipped.
 """
 
 from __future__ import annotations
@@ -40,10 +39,14 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import numpy as np
+import pandas as pd
 
 from src.data_collection import DataCollector
 from src.database_manager import DatabaseManager
+from src.evaluation import QueryEstimationCache
+from src.features import FeatureMapper
 from src.metrics import abs_error, q_error
+from src.model import Model
 from src.optimizer import QueryCategory
 from src.train import optimize_all
 
@@ -56,11 +59,17 @@ except Exception:  # pragma: no cover
 
 try:
     import xgboost  # type: ignore
-
     _HAS_XGBOOST = True
 except Exception:
     xgboost = None  # type: ignore
     _HAS_XGBOOST = False
+
+try:
+    import catboost  # type: ignore
+    _HAS_CATBOOST_PKG = True
+except Exception:
+    catboost = None  # type: ignore
+    _HAS_CATBOOST_PKG = False
 
 
 def _now_stamp() -> str:
@@ -74,7 +83,7 @@ def _safe_mkdir(path: Path) -> None:
 @dataclass(frozen=True)
 class DatasetSlice:
     name: str
-    queries: list[Any]  # BenchmarkedQuery, but avoid import cycle typing
+    queries: list[Any]
 
 
 def _paper_slices(predicted_cardinalities: bool) -> list[DatasetSlice]:
@@ -133,7 +142,6 @@ def _quantiles(values: np.ndarray) -> dict[str, float]:
 
 def _model_name(model: Any) -> str:
     name = model.__class__.__name__
-    # Heuristic naming for common models in this repo
     if name == "PerTupleTreeModel":
         return "T3 (LightGBM PerTupleTreeModel)"
     return name
@@ -158,7 +166,6 @@ def _iter_per_query_rows(model: Any, model_label: str, queries: Iterable[Any]):
         qerr = float(q_error(true_s, pred_s))
         aerr = float(abs_error(true_s, pred_s))
 
-        # Extra context for interpretation
         db = getattr(q.query_plan, "db", None)
         db_schema = getattr(getattr(db, "schema", None), "name", None)
         db_path = getattr(db, "name", None)
@@ -224,13 +231,6 @@ def _write_markdown_worst(path: Path, rows: list[dict[str, Any]], model_label: s
         f.write("\n".join(lines) + "\n")
 
 
-def _train_xgboost_model(predicted_cardinalities: bool):
-    # Reuse the implementation that matches T3's per-tuple target transform.
-    from src.compare_xgboost import train_xgboost_per_tuple_model
-
-    return train_xgboost_per_tuple_model(predicted_cardinalities)
-
-
 def _env_metadata() -> dict[str, Any]:
     return {
         "python": sys.version,
@@ -240,11 +240,47 @@ def _env_metadata() -> dict[str, Any]:
         "numpy": getattr(np, "__version__", None),
         "lightgbm": getattr(lgb, "__version__", None) if lgb is not None else None,
         "xgboost": getattr(xgboost, "__version__", None) if xgboost is not None else None,
+        "catboost": getattr(catboost, "__version__", None) if catboost is not None else None,
     }
 
+def _build_per_tuple_training_data(benchmarks, feature_mapper: FeatureMapper) -> tuple[np.ndarray, np.ndarray]:
+    x_vectors: list[np.ndarray] = []
+    y_values: list[float] = []
+    for query in benchmarks:
+        for x, y in query.get_per_tuple_pipeline_runtime_data(feature_mapper):
+            if np.any(x != 0):
+                x_vectors.append(x)
+                y_values.append(float(y))
+    x = np.vstack(x_vectors).astype(np.float32, copy=False)
+    y = np.array(y_values, dtype=np.float32)
+    y = np.maximum(y, 1e-15)
+    y = -np.log(y)
+    y = np.maximum(y, 1e-6)
+    return x, y
+
+def _benchmark_batch_predict(predict_fn, x: np.ndarray, repeats: int = 5) -> float:
+    """Return best-case avg microseconds per row for predict_fn(x)."""
+    best_s = None
+    for _ in range(max(1, repeats)):
+        start = time.perf_counter()
+        _ = predict_fn(x)
+        elapsed = time.perf_counter() - start
+        best_s = elapsed if best_s is None else min(best_s, elapsed)
+    us_per_row = (best_s / max(1, x.shape[0])) * 1e6
+    return float(us_per_row)
+
+def _benchmark_batch_predict_fixed(predict_fn, *, n_rows: int, repeats: int = 5) -> float:
+    best_s = None
+    for _ in range(max(1, repeats)):
+        start = time.perf_counter()
+        _ = predict_fn()
+        elapsed = time.perf_counter() - start
+        best_s = elapsed if best_s is None else min(best_s, elapsed)
+    us_per_row = (best_s / max(1, n_rows)) * 1e6
+    return float(us_per_row)
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Compare T3 vs XGBoost and save detailed results")
+    parser = argparse.ArgumentParser(description="Compare T3 vs XGBoost vs CatBoost")
     parser.add_argument("--outdir", default="compare_output", help="Base output directory")
     parser.add_argument("--topk", type=int, default=50, help="How many worst queries to list per model")
     parser.add_argument(
@@ -256,6 +292,11 @@ def main() -> int:
         "--skip-xgboost",
         action="store_true",
         help="Skip training/evaluating XGBoost even if installed",
+    )
+    parser.add_argument(
+        "--skip-catboost",
+        action="store_true",
+        help="Skip training/evaluating CatBoost even if installed",
     )
     args = parser.parse_args()
 
@@ -271,42 +312,94 @@ def main() -> int:
     }
     _write_json(run_dir / "meta.json", meta)
 
-    # Train baseline model
-    print("[1/4] Training original T3 model...")
+    # Pre-build benchmark matrix for model-only latency tests
+    feature_mapper = FeatureMapper()
+    train_benchmarks = DataCollector.collect_benchmarks(DatabaseManager.get_train_databases(), predicted_cardinalities)
+    bench_x, _ = _build_per_tuple_training_data(train_benchmarks, feature_mapper)
+    bench_x_contig = np.ascontiguousarray(bench_x, dtype=np.float32)
+    n_rows, n_cols = bench_x_contig.shape
+    bench_out = np.zeros(n_rows, dtype=np.float32)
+
+    models: list[tuple[str, Any, float]] = []
+
+    # 1. T3 Baseline
+    print("=== Training original T3 model ===")
     t0 = time.perf_counter()
     t3_model = optimize_all(predicted_cardinalities)
     t3_train_s = time.perf_counter() - t0
-    t3_label = _model_name(t3_model)
+    models.append(("T3 (original)", t3_model, t3_train_s))
 
-    models: list[tuple[str, Any, float]] = [(t3_label, t3_model, t3_train_s)]
-
-    # Train XGBoost model (optional)
-    if args.skip_xgboost:
-        print("[2/4] Skipping XGBoost (flag set)")
-    elif not _HAS_XGBOOST:
-        print("[2/4] XGBoost not installed; skipping XGBoost")
-    else:
-        print("[2/4] Training XGBoost per-tuple model...")
+    from src.compare_xgboost import _HAS_LLEAVES
+    if _HAS_LLEAVES:
+        from src.compare_xgboost import compile_t3_with_lleaves
+        print("=== Compiling T3 (lleaves) ===")
         t0 = time.perf_counter()
-        xgb_model = _train_xgboost_model(predicted_cardinalities)
+        t3_compiled = compile_t3_with_lleaves(t3_model, run_dir / "compiled")
+        compile_s = time.perf_counter() - t0
+        models.append(("T3 (compiled lleaves)", t3_compiled, t3_train_s + compile_s))
+
+    # 2. XGBoost
+    if not args.skip_xgboost and _HAS_XGBOOST:
+        from src.compare_xgboost import train_xgboost_per_tuple_model, _HAS_TL2CGEN, compile_xgboost_with_tl2cgen
+        print("=== Training XGBoost ===")
+        t0 = time.perf_counter()
+        xgb_model = train_xgboost_per_tuple_model(predicted_cardinalities)
         xgb_train_s = time.perf_counter() - t0
-        models.append(("XGBoost (per-tuple)", xgb_model, xgb_train_s))
+        models.append(("XGBoost (uncompiled)", xgb_model, xgb_train_s))
+
+        if _HAS_TL2CGEN:
+            print("=== Compiling XGBoost (tl2cgen) ===")
+            t0 = time.perf_counter()
+            xgb_compiled = compile_xgboost_with_tl2cgen(xgb_model.regressor, run_dir / "compiled")
+            compile_s = time.perf_counter() - t0
+            models.append(("XGBoost (compiled tl2cgen)", xgb_compiled, xgb_train_s + compile_s))
+
+    # 3. CatBoost
+    if not args.skip_catboost and _HAS_CATBOOST_PKG:
+        from src.compare_catboost import _HAS_CATBOOST
+        if _HAS_CATBOOST:
+            from src.compare_catboost import train_catboost_per_tuple_model, compile_catboost_to_cpp
+            print("=== Training CatBoost ===")
+            t0 = time.perf_counter()
+            cat_model = train_catboost_per_tuple_model(predicted_cardinalities)
+            cat_train_s = time.perf_counter() - t0
+            models.append(("CatBoost (uncompiled)", cat_model, cat_train_s))
+
+            print("=== Compiling CatBoost (C++) ===")
+            t0 = time.perf_counter()
+            cat_compiled = compile_catboost_to_cpp(cat_model, run_dir / "compiled")
+            compile_s = time.perf_counter() - t0
+            models.append(("CatBoost (compiled C++)", cat_compiled, cat_train_s + compile_s))
 
     # Prepare datasets
-    slices = _paper_slices(predicted_cardinalities) + [_all_queries_slice(predicted_cardinalities)]
+    slices = _paper_slices(predicted_cardinalities)
+    all_queries_slice = _all_queries_slice(predicted_cardinalities)
+    
+    # We evaluate on paper slices for the table printout, and all queries for the complete CSV log.
+    eval_slices = slices + [all_queries_slice]
 
     # Evaluate and save summary
-    print("[3/4] Evaluating models and writing summaries...")
+    print(f"\\n=== Evaluating {len(models)} models ===")
     summary_rows: list[dict[str, Any]] = []
 
-    # Per-query results across all queries (for detailed inspection)
-    all_queries = _all_queries_slice(predicted_cardinalities).queries
+    all_queries = all_queries_slice.queries
     per_query_rows: list[dict[str, Any]] = []
 
     for model_label, model, train_s in models:
-        for ds in slices:
+        # Evaluate model on slices
+        rows_for_print = []
+        for ds in eval_slices:
             qerrs, avg_ms = _evaluate_model_on_slice(model, ds)
             stats = _quantiles(qerrs)
+            
+            if ds.name != "All Queries (All DBs)":
+                rows_for_print.append({
+                    "Dataset": ds.name,
+                    "p50": stats["p50"],
+                    "p90": stats["p90"],
+                    "Avg": stats["avg"]
+                })
+            
             summary_rows.append(
                 {
                     "model": model_label,
@@ -317,12 +410,48 @@ def main() -> int:
                 }
             )
 
-        # Detailed per-query rows
+        print(f"\\n{model_label} — Q-Error table")
+        df_print = pd.DataFrame(rows_for_print)
+        print(df_print.to_string(index=False, float_format=lambda v: f"{v:.2f}"))
+
+        # Calculate end-to-end latency across all queries
+        start = time.perf_counter()
+        for q in all_queries:
+            _ = model.estimate_runtime(q)
+        elapsed = time.perf_counter() - start
+        avg_ms_e2e = (elapsed / max(1, len(all_queries))) * 1000.0
+
+        print(f"[Timing] Train/Compile: {train_s:.2f}s | Avg inference: {avg_ms_e2e:.3f} ms/query")
+
+        # Calculate model-only latency
+        us_row = None
+        try:
+            if "compiled lleaves" in model_label:
+                us_row = _benchmark_batch_predict(lambda m: model.compiled_model.predict(m), bench_x)
+            elif "T3 (original)" in model_label:
+                us_row = _benchmark_batch_predict(lambda m: model.tree.predict(m), bench_x)
+            elif "XGBoost (uncompiled)" in model_label:
+                us_row = _benchmark_batch_predict(lambda m: model.regressor.predict(m), bench_x)
+            elif "XGBoost (compiled tl2cgen)" in model_label:
+                import tl2cgen
+                bench_dmat = tl2cgen.DMatrix(bench_x)
+                us_row = _benchmark_batch_predict_fixed(lambda: model.predictor.predict(bench_dmat), n_rows=n_rows)
+            elif "CatBoost (uncompiled)" in model_label:
+                us_row = _benchmark_batch_predict(lambda m: model.regressor.predict(m), bench_x)
+            elif "CatBoost (compiled C++)" in model_label:
+                us_row = _benchmark_batch_predict_fixed(lambda: model.lib.predict_batch(bench_x_contig, bench_out, n_rows, n_cols), n_rows=n_rows)
+            
+            if us_row is not None:
+                print(f"[Model-only] Predict: {us_row:.3f} us/row")
+        except Exception as e:
+            print(f"[Model-only] Predict failed: {e}")
+
         per_query_rows_for_model = list(_iter_per_query_rows(model, model_label, all_queries))
         per_query_rows.extend(per_query_rows_for_model)
 
-        # Worst offenders markdown
-        _write_markdown_worst(run_dir / f"worst_{model_label.replace(' ', '_').replace('(', '').replace(')', '')}.md", per_query_rows_for_model, model_label, args.topk)
+        # Write top k worst queries
+        clean_label = model_label.replace(" ", "_").replace("(", "").replace(")", "").replace("+", "p")
+        _write_markdown_worst(run_dir / f"worst_{clean_label}.md", per_query_rows_for_model, model_label, args.topk)
 
     # Write summary + per-query CSV
     summary_fields = [
@@ -354,10 +483,10 @@ def main() -> int:
     ]
     _write_csv(run_dir / "per_query.csv", per_query_rows, per_query_fields)
 
-    # Also save a compact human-readable report
-    print("[4/4] Writing report.md...")
+    # Save a compact human-readable report
+    print(f"\\n=== Writing report.md to {run_dir} ===")
     report_lines = []
-    report_lines.append("# Comparison Report")
+    report_lines.append("# Comparison Report (T3 vs XGBoost vs CatBoost)")
     report_lines.append("")
     report_lines.append(f"Output folder: `{run_dir}`")
     report_lines.append("")
@@ -371,7 +500,6 @@ def main() -> int:
     report_lines.append("## Quick view")
     report_lines.append("")
 
-    # Embed a small table (sorted for readability)
     summary_sorted = sorted(summary_rows, key=lambda r: (r["dataset"], r["model"]))
     report_lines.append("| dataset | model | p50 | p90 | avg | max | avg_inference_ms | train_s | n |")
     report_lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|")
@@ -393,7 +521,7 @@ def main() -> int:
     with open(run_dir / "report.md", "w") as f:
         f.write("\n".join(report_lines) + "\n")
 
-    print(f"Done. Results saved to: {run_dir}")
+    print(f"Done.")
     return 0
 
 
