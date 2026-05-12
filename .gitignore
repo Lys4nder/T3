@@ -22,3 +22,5 @@ data.tar.lz4
 sql
 webserver
 lleaves.o
+documentation/
+run*
