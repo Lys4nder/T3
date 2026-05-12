@@ -15,7 +15,8 @@ from src.database_manager import DatabaseManager
 from src.features import FeatureMapper
 from src.metrics import q_error
 from src.evaluation import QueryEstimationCache
-from src.compare_catboost import CatBoostPerTupleModel, _build_per_tuple_training_data
+from src.compare_catboost import CatBoostPerTupleModel
+from src.training_data import build_per_tuple_training_data
 
 # L9 Orthogonal Array (Rows=Experiments, Cols=Factors)
 # Values are 1, 2, or 3 representing the level.
@@ -46,7 +47,7 @@ def main():
     
     print("Loading training data...")
     train_benchmarks = DataCollector.collect_benchmarks(DatabaseManager.get_train_databases(), predicted_cardinalities)
-    x_full, y_full = _build_per_tuple_training_data(train_benchmarks, feature_mapper)
+    x_full, y_full = build_per_tuple_training_data(train_benchmarks, feature_mapper)
     
     print("Loading test data (All TPC-DS Test Queries)...")
     test_benchmarks = DataCollector.collect_benchmarks(DatabaseManager.get_test_databases(), predicted_cardinalities)

@@ -10,6 +10,7 @@ from src.metrics import q_error
 from src.model import FeatureMapper, TreeModel, PerTupleTreeModel, FlatTreeModel
 from src.operators import OperatorType
 from src.query_plan import QueryPlan
+from src.training_data import build_per_tuple_training_data
 from src.util import AutoNumber
 
 
@@ -223,18 +224,7 @@ def optimize_flat_tree_model(queries: list[BenchmarkedQuery], verbose: bool = Fa
 
 def optimize_per_tuple_tree_model(queries: list[BenchmarkedQuery], verbose: bool = False) -> PerTupleTreeModel:
     feature_mapper = FeatureMapper()
-    x_vectors = []
-    y_values = []
-    for query in queries:
-        for x, y in query.get_per_tuple_pipeline_runtime_data(feature_mapper):
-            if np.any(x != 0):
-                x_vectors.append(x)
-                y_values.append(y)
-    x = np.vstack(x_vectors)
-    y = np.array(y_values)
-    # log scale improves training
-    y = np.maximum(y, 1e-15)
-    y = -np.log(y)
+    x, y = build_per_tuple_training_data(queries, feature_mapper, dtype=np.float64)
     seed = 21
     param = {"objective": "mape", "verbose": 2 if verbose else -1}
     x_train, x_val, y_train, y_val = train_test_split(x, y, test_size=0.2, random_state=seed)

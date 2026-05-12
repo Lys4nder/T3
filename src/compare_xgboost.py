@@ -3,21 +3,23 @@ from __future__ import annotations
 import os
 import sys
 import time
-from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 from sklearn.model_selection import train_test_split
 
 from src.data_collection import DataCollector
 from src.database_manager import DatabaseManager
-from src.evaluation import QueryEstimationCache
 from src.features import FeatureMapper
-from src.metrics import q_error
 from src.model import Model
-from src.optimizer import QueryCategory
 from src.train import optimize_all
+
+from src.compare_utils import (
+    benchmark_batch_predict as _benchmark_batch_predict,
+    benchmark_batch_predict_fixed as _benchmark_batch_predict_fixed,
+    evaluate_model as _evaluate_model,
+)
+from src.training_data import build_per_tuple_training_data as _build_per_tuple_training_data
 
 
 try:
@@ -47,112 +49,6 @@ try:
 except Exception:
     XGBRegressor = None  # type: ignore
     _HAS_XGBOOST = False
-
-
-@dataclass(frozen=True)
-class SummaryRow:
-    dataset: str
-    p50: float
-    p90: float
-    avg: float
-
-
-def _build_accuracy_slices(predicted_cardinalities: bool = False):
-    return [
-        (
-            "Train Queries",
-            DataCollector.collect_benchmarks(DatabaseManager.get_train_databases(), predicted_cardinalities),
-        ),
-        (
-            "All TPC-DS Test Queries",
-            DataCollector.collect_benchmarks(DatabaseManager.get_test_databases(), predicted_cardinalities),
-        ),
-        (
-            "TPC-DS Benchmark Queries",
-            DataCollector.collect_benchmarks(
-                DatabaseManager.get_test_databases(),
-                predicted_cardinalities,
-                query_category=[QueryCategory.fixed],
-            ),
-        ),
-        (
-            "TPC-DS sf 100 Test Queries",
-            DataCollector.collect_benchmarks([DatabaseManager.get_database("tpcdsSf100")], predicted_cardinalities),
-        ),
-        (
-            "TPC-DS sf 100 Benchmark Queries",
-            DataCollector.collect_benchmarks(
-                [DatabaseManager.get_database("tpcdsSf100")],
-                predicted_cardinalities,
-                query_category=[QueryCategory.fixed],
-            ),
-        ),
-    ]
-
-
-def _summarize_qerrors(estimation_cache: QueryEstimationCache, queries) -> SummaryRow:
-    estimates = [estimation_cache.queries[q.name].estimated_time for q in queries]
-    q_errors = np.array([q_error(q.get_total_runtime(), est) for q, est in zip(queries, estimates)], dtype=float)
-    return SummaryRow(dataset="", p50=float(np.median(q_errors)), p90=float(np.quantile(q_errors, 0.9)), avg=float(q_errors.mean()))
-
-
-def _evaluate_model(model: Model, predicted_cardinalities: bool = False) -> tuple[pd.DataFrame, float]:
-    """Returns (accuracy_table_df, avg_inference_ms_per_query)."""
-    cache = QueryEstimationCache(model, predicted_cardinalities)
-
-    rows = []
-    for dataset_name, queries in _build_accuracy_slices(predicted_cardinalities):
-        summary = _summarize_qerrors(cache, queries)
-        rows.append({"Dataset": dataset_name, "p50": summary.p50, "p90": summary.p90, "Avg": summary.avg})
-    df = pd.DataFrame(rows)
-
-    all_queries = DataCollector.collect_benchmarks(DatabaseManager.get_all_databases(), predicted_cardinalities)
-    start = time.perf_counter()
-    for q in all_queries:
-        _ = model.estimate_runtime(q)
-    elapsed = time.perf_counter() - start
-    avg_ms = (elapsed / max(1, len(all_queries))) * 1000.0
-    return df, avg_ms
-
-
-def _build_per_tuple_training_data(benchmarks, feature_mapper: FeatureMapper) -> tuple[np.ndarray, np.ndarray]:
-    x_vectors: list[np.ndarray] = []
-    y_values: list[float] = []
-    for query in benchmarks:
-        for x, y in query.get_per_tuple_pipeline_runtime_data(feature_mapper):
-            if np.any(x != 0):
-                x_vectors.append(x)
-                y_values.append(float(y))
-    x = np.vstack(x_vectors).astype(np.float32, copy=False)
-    y = np.array(y_values, dtype=np.float32)
-    y = np.maximum(y, 1e-15)
-    y = -np.log(y)
-    y = np.maximum(y, 1e-6)
-    return x, y
-
-
-def _benchmark_batch_predict(predict_fn, x: np.ndarray, repeats: int = 5) -> float:
-    """Return best-case avg microseconds per row for predict_fn(x)"""
-    best_s = None
-    for _ in range(max(1, repeats)):
-        start = time.perf_counter()
-        _ = predict_fn(x)
-        elapsed = time.perf_counter() - start
-        best_s = elapsed if best_s is None else min(best_s, elapsed)
-    us_per_row = (best_s / max(1, x.shape[0])) * 1e6
-    return float(us_per_row)
-
-
-def _benchmark_batch_predict_fixed(predict_fn, *, n_rows: int, repeats: int = 5) -> float:
-    """Return best-case avg microseconds per row for a fixed-argument predict_fn()"""
-    best_s = None
-    for _ in range(max(1, repeats)):
-        start = time.perf_counter()
-        _ = predict_fn()
-        elapsed = time.perf_counter() - start
-        best_s = elapsed if best_s is None else min(best_s, elapsed)
-    us_per_row = (best_s / max(1, n_rows)) * 1e6
-    return float(us_per_row)
 
 
 class XGBPerTupleModel(Model):

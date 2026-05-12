@@ -46,14 +46,18 @@ from src.features import FeatureMapper
 from src.metrics import abs_error, q_error
 from src.train import optimize_all
 
+from src.compare_utils import (
+    benchmark_batch_predict as _benchmark_batch_predict,
+    benchmark_batch_predict_fixed as _benchmark_batch_predict_fixed,
+    build_accuracy_slices as _build_accuracy_slices,
+)
+
+from src.training_data import build_per_tuple_training_data as _build_per_tuple_training_data
+
 from src.compare_xgboost import (
     _HAS_LLEAVES,
     _HAS_TL2CGEN,
     _HAS_XGBOOST,
-    _benchmark_batch_predict,
-    _benchmark_batch_predict_fixed,
-    _build_accuracy_slices,
-    _build_per_tuple_training_data,
     compile_t3_with_lleaves,
     compile_xgboost_with_tl2cgen,
     train_xgboost_per_tuple_model,
