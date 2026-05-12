@@ -1,29 +1,3 @@
-#!/usr/bin/env python3
-
-"""Compare and save evaluation results for T3, XGBoost, and CatBoost variants (compiled & uncompiled).
-
-This is a *report generator* meant to make results easier to interpret than console-only output.
-
-What it does:
-- Trains the original T3 model (LightGBM) using the repo's normal pipeline.
-- Compiles the T3 model (if lleaves is available).
-- Trains an XGBoost variant and compiles it (if available).
-- Trains a CatBoost variant and compiles it natively to C++ (if available).
-- Evaluates all models on:
-  - the same slices used by the paper's accuracy table
-  - the full benchmark corpus (all DBs)
-- Saves detailed per-query results and summary statistics to a timestamped folder.
-
-Run (from repo root):
-
-  source venv/bin/activate
-  python compare.py
-
-Optional:
-
-  python compare.py --topk 100 --outdir compare_output
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -395,7 +369,7 @@ def main() -> int:
     _write_csv(run_dir / "per_query.csv", per_query_rows, per_query_fields)
 
     # Save a compact human-readable report
-    print(f"\\n=== Writing report.md to {run_dir} ===")
+    # print(f"\\n=== Writing report.md to {run_dir} ===")
     report_lines = []
     report_lines.append("# Comparison Report (T3 vs XGBoost vs CatBoost)")
     report_lines.append("")
