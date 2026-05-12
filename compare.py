@@ -33,7 +33,6 @@ import os
 import platform
 import sys
 import time
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
@@ -43,12 +42,28 @@ import pandas as pd
 
 from src.data_collection import DataCollector
 from src.database_manager import DatabaseManager
-from src.evaluation import QueryEstimationCache
 from src.features import FeatureMapper
 from src.metrics import abs_error, q_error
-from src.model import Model
-from src.optimizer import QueryCategory
 from src.train import optimize_all
+
+from src.compare_xgboost import (
+    _HAS_LLEAVES,
+    _HAS_TL2CGEN,
+    _HAS_XGBOOST,
+    _benchmark_batch_predict,
+    _benchmark_batch_predict_fixed,
+    _build_accuracy_slices,
+    _build_per_tuple_training_data,
+    compile_t3_with_lleaves,
+    compile_xgboost_with_tl2cgen,
+    train_xgboost_per_tuple_model,
+)
+
+from src.compare_catboost import (
+    _HAS_CATBOOST,
+    compile_catboost_to_cpp,
+    train_catboost_per_tuple_model,
+)
 
 
 try:
@@ -59,17 +74,13 @@ except Exception:  # pragma: no cover
 
 try:
     import xgboost  # type: ignore
-    _HAS_XGBOOST = True
 except Exception:
     xgboost = None  # type: ignore
-    _HAS_XGBOOST = False
 
 try:
     import catboost  # type: ignore
-    _HAS_CATBOOST_PKG = True
 except Exception:
     catboost = None  # type: ignore
-    _HAS_CATBOOST_PKG = False
 
 
 def _now_stamp() -> str:
@@ -78,53 +89,6 @@ def _now_stamp() -> str:
 
 def _safe_mkdir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
-
-
-@dataclass(frozen=True)
-class DatasetSlice:
-    name: str
-    queries: list[Any]
-
-
-def _paper_slices(predicted_cardinalities: bool) -> list[DatasetSlice]:
-    return [
-        DatasetSlice(
-            "Train Queries",
-            DataCollector.collect_benchmarks(DatabaseManager.get_train_databases(), predicted_cardinalities),
-        ),
-        DatasetSlice(
-            "All TPC-DS Test Queries",
-            DataCollector.collect_benchmarks(DatabaseManager.get_test_databases(), predicted_cardinalities),
-        ),
-        DatasetSlice(
-            "TPC-DS Benchmark Queries",
-            DataCollector.collect_benchmarks(
-                DatabaseManager.get_test_databases(),
-                predicted_cardinalities,
-                query_category=[QueryCategory.fixed],
-            ),
-        ),
-        DatasetSlice(
-            "TPC-DS sf 100 Test Queries",
-            DataCollector.collect_benchmarks([DatabaseManager.get_database("tpcdsSf100")], predicted_cardinalities),
-        ),
-        DatasetSlice(
-            "TPC-DS sf 100 Benchmark Queries",
-            DataCollector.collect_benchmarks(
-                [DatabaseManager.get_database("tpcdsSf100")],
-                predicted_cardinalities,
-                query_category=[QueryCategory.fixed],
-            ),
-        ),
-    ]
-
-
-def _all_queries_slice(predicted_cardinalities: bool) -> DatasetSlice:
-    return DatasetSlice(
-        "All Queries (All DBs)",
-        DataCollector.collect_benchmarks(DatabaseManager.get_all_databases(), predicted_cardinalities),
-    )
-
 
 def _quantiles(values: np.ndarray) -> dict[str, float]:
     if len(values) == 0:
@@ -147,15 +111,15 @@ def _model_name(model: Any) -> str:
     return name
 
 
-def _evaluate_model_on_slice(model: Any, dataset: DatasetSlice) -> tuple[np.ndarray, float]:
+def _evaluate_model_on_queries(model: Any, queries: list[Any]) -> tuple[np.ndarray, float]:
     qerrs: list[float] = []
     start = time.perf_counter()
-    for q in dataset.queries:
+    for q in queries:
         true_s = float(q.get_total_runtime())
         pred_s = float(model.estimate_runtime(q))
         qerrs.append(float(q_error(true_s, pred_s)))
     elapsed = time.perf_counter() - start
-    avg_ms_per_query = (elapsed / max(1, len(dataset.queries))) * 1000.0
+    avg_ms_per_query = (elapsed / max(1, len(queries))) * 1000.0
     return np.array(qerrs, dtype=float), avg_ms_per_query
 
 
@@ -243,42 +207,6 @@ def _env_metadata() -> dict[str, Any]:
         "catboost": getattr(catboost, "__version__", None) if catboost is not None else None,
     }
 
-def _build_per_tuple_training_data(benchmarks, feature_mapper: FeatureMapper) -> tuple[np.ndarray, np.ndarray]:
-    x_vectors: list[np.ndarray] = []
-    y_values: list[float] = []
-    for query in benchmarks:
-        for x, y in query.get_per_tuple_pipeline_runtime_data(feature_mapper):
-            if np.any(x != 0):
-                x_vectors.append(x)
-                y_values.append(float(y))
-    x = np.vstack(x_vectors).astype(np.float32, copy=False)
-    y = np.array(y_values, dtype=np.float32)
-    y = np.maximum(y, 1e-15)
-    y = -np.log(y)
-    y = np.maximum(y, 1e-6)
-    return x, y
-
-def _benchmark_batch_predict(predict_fn, x: np.ndarray, repeats: int = 5) -> float:
-    """Return best-case avg microseconds per row for predict_fn(x)."""
-    best_s = None
-    for _ in range(max(1, repeats)):
-        start = time.perf_counter()
-        _ = predict_fn(x)
-        elapsed = time.perf_counter() - start
-        best_s = elapsed if best_s is None else min(best_s, elapsed)
-    us_per_row = (best_s / max(1, x.shape[0])) * 1e6
-    return float(us_per_row)
-
-def _benchmark_batch_predict_fixed(predict_fn, *, n_rows: int, repeats: int = 5) -> float:
-    best_s = None
-    for _ in range(max(1, repeats)):
-        start = time.perf_counter()
-        _ = predict_fn()
-        elapsed = time.perf_counter() - start
-        best_s = elapsed if best_s is None else min(best_s, elapsed)
-    us_per_row = (best_s / max(1, n_rows)) * 1e6
-    return float(us_per_row)
-
 def main() -> int:
     parser = argparse.ArgumentParser(description="Compare T3 vs XGBoost vs CatBoost")
     parser.add_argument("--outdir", default="compare_output", help="Base output directory")
@@ -287,16 +215,6 @@ def main() -> int:
         "--predicted-cardinalities",
         action="store_true",
         help="Use predicted (instead of analyzed) cardinalities when parsing plans",
-    )
-    parser.add_argument(
-        "--skip-xgboost",
-        action="store_true",
-        help="Skip training/evaluating XGBoost even if installed",
-    )
-    parser.add_argument(
-        "--skip-catboost",
-        action="store_true",
-        help="Skip training/evaluating CatBoost even if installed",
     )
     args = parser.parse_args()
 
@@ -329,9 +247,7 @@ def main() -> int:
     t3_train_s = time.perf_counter() - t0
     models.append(("T3 (original)", t3_model, t3_train_s))
 
-    from src.compare_xgboost import _HAS_LLEAVES
     if _HAS_LLEAVES:
-        from src.compare_xgboost import compile_t3_with_lleaves
         print("=== Compiling T3 (lleaves) ===")
         t0 = time.perf_counter()
         t3_compiled = compile_t3_with_lleaves(t3_model, run_dir / "compiled")
@@ -339,8 +255,7 @@ def main() -> int:
         models.append(("T3 (compiled lleaves)", t3_compiled, t3_train_s + compile_s))
 
     # 2. XGBoost
-    if not args.skip_xgboost and _HAS_XGBOOST:
-        from src.compare_xgboost import train_xgboost_per_tuple_model, _HAS_TL2CGEN, compile_xgboost_with_tl2cgen
+    if _HAS_XGBOOST:
         print("=== Training XGBoost ===")
         t0 = time.perf_counter()
         xgb_model = train_xgboost_per_tuple_model(predicted_cardinalities)
@@ -355,10 +270,7 @@ def main() -> int:
             models.append(("XGBoost (compiled tl2cgen)", xgb_compiled, xgb_train_s + compile_s))
 
     # 3. CatBoost
-    if not args.skip_catboost and _HAS_CATBOOST_PKG:
-        from src.compare_catboost import _HAS_CATBOOST
-        if _HAS_CATBOOST:
-            from src.compare_catboost import train_catboost_per_tuple_model, compile_catboost_to_cpp
+    if _HAS_CATBOOST:
             print("=== Training CatBoost ===")
             t0 = time.perf_counter()
             cat_model = train_catboost_per_tuple_model(predicted_cardinalities)
@@ -372,29 +284,26 @@ def main() -> int:
             models.append(("CatBoost (compiled C++)", cat_compiled, cat_train_s + compile_s))
 
     # Prepare datasets
-    slices = _paper_slices(predicted_cardinalities)
-    all_queries_slice = _all_queries_slice(predicted_cardinalities)
-    
-    # We evaluate on paper slices for the table printout, and all queries for the complete CSV log.
-    eval_slices = slices + [all_queries_slice]
+    paper_slices = _build_accuracy_slices(predicted_cardinalities)
+    all_queries_name = "All Queries (All DBs)"
+    all_queries = DataCollector.collect_benchmarks(DatabaseManager.get_all_databases(), predicted_cardinalities)
 
     # Evaluate and save summary
     print(f"\\n=== Evaluating {len(models)} models ===")
     summary_rows: list[dict[str, Any]] = []
 
-    all_queries = all_queries_slice.queries
     per_query_rows: list[dict[str, Any]] = []
 
     for model_label, model, train_s in models:
         # Evaluate model on slices
         rows_for_print = []
-        for ds in eval_slices:
-            qerrs, avg_ms = _evaluate_model_on_slice(model, ds)
+        for dataset_name, queries in (paper_slices + [(all_queries_name, all_queries)]):
+            qerrs, avg_ms = _evaluate_model_on_queries(model, queries)
             stats = _quantiles(qerrs)
             
-            if ds.name != "All Queries (All DBs)":
+            if dataset_name != all_queries_name:
                 rows_for_print.append({
-                    "Dataset": ds.name,
+                    "Dataset": dataset_name,
                     "p50": stats["p50"],
                     "p90": stats["p90"],
                     "Avg": stats["avg"]
@@ -403,7 +312,7 @@ def main() -> int:
             summary_rows.append(
                 {
                     "model": model_label,
-                    "dataset": ds.name,
+                    "dataset": dataset_name,
                     "train_s": float(train_s),
                     "avg_inference_ms_per_query": float(avg_ms),
                     **stats,
@@ -449,11 +358,9 @@ def main() -> int:
         per_query_rows_for_model = list(_iter_per_query_rows(model, model_label, all_queries))
         per_query_rows.extend(per_query_rows_for_model)
 
-        # Write top k worst queries
         clean_label = model_label.replace(" ", "_").replace("(", "").replace(")", "").replace("+", "p")
         _write_markdown_worst(run_dir / f"worst_{clean_label}.md", per_query_rows_for_model, model_label, args.topk)
 
-    # Write summary + per-query CSV
     summary_fields = [
         "model",
         "dataset",
