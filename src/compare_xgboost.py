@@ -1,37 +1,3 @@
-"""Compare original T3 model vs an XGBoost variant.
-
-This script intentionally reuses the *same* data pipeline as `main.py`:
-- training set: `DatabaseManager.get_train_databases()`
-- evaluation slices: same as `src/figures/accuracy_table.py`
-
-It trains:
-- Original T3 model (LightGBM-based) via `src.train.optimize_all()`
-- Optional XGBoost regressor trained on the identical per-tuple pipeline dataset
-
-Run from repo root:
-
-  . venv/bin/activate
-  python -m src.compare_xgboost
-
-To evaluate compiled variants:
-
-    # Compile/evaluate LightGBM via lleaves
-    T3_RUN_COMPILED=1 python -m src.compare_xgboost
-
-    # Compile/evaluate XGBoost via tl2cgen (requires tl2cgen + treelite)
-    T3_RUN_XGB_COMPILED=1 python -m src.compare_xgboost
-
-On macOS, treelite/tl2cgen may require OpenMP runtime discovery:
-
-    brew install libomp
-    DYLD_LIBRARY_PATH=/opt/homebrew/opt/libomp/lib:$DYLD_LIBRARY_PATH \
-        T3_RUN_XGB_COMPILED=1 python -m src.compare_xgboost
-
-If XGBoost isn't installed:
-
-  pip install xgboost
-"""
-
 from __future__ import annotations
 
 import os
@@ -134,14 +100,12 @@ def _evaluate_model(model: Model, predicted_cardinalities: bool = False) -> tupl
     """Returns (accuracy_table_df, avg_inference_ms_per_query)."""
     cache = QueryEstimationCache(model, predicted_cardinalities)
 
-    # Accuracy slices (same as the paper's table script)
     rows = []
     for dataset_name, queries in _build_accuracy_slices(predicted_cardinalities):
         summary = _summarize_qerrors(cache, queries)
         rows.append({"Dataset": dataset_name, "p50": summary.p50, "p90": summary.p90, "Avg": summary.avg})
     df = pd.DataFrame(rows)
 
-    # Inference time across all queries
     all_queries = DataCollector.collect_benchmarks(DatabaseManager.get_all_databases(), predicted_cardinalities)
     start = time.perf_counter()
     for q in all_queries:
@@ -161,7 +125,6 @@ def _build_per_tuple_training_data(benchmarks, feature_mapper: FeatureMapper) ->
                 y_values.append(float(y))
     x = np.vstack(x_vectors).astype(np.float32, copy=False)
     y = np.array(y_values, dtype=np.float32)
-    # Match `optimize_per_tuple_tree_model`: train in log space on per-tuple runtimes
     y = np.maximum(y, 1e-15)
     y = -np.log(y)
     y = np.maximum(y, 1e-6)
@@ -169,7 +132,7 @@ def _build_per_tuple_training_data(benchmarks, feature_mapper: FeatureMapper) ->
 
 
 def _benchmark_batch_predict(predict_fn, x: np.ndarray, repeats: int = 5) -> float:
-    """Return best-case avg microseconds per row for predict_fn(x)."""
+    """Return best-case avg microseconds per row for predict_fn(x)"""
     best_s = None
     for _ in range(max(1, repeats)):
         start = time.perf_counter()
@@ -181,7 +144,7 @@ def _benchmark_batch_predict(predict_fn, x: np.ndarray, repeats: int = 5) -> flo
 
 
 def _benchmark_batch_predict_fixed(predict_fn, *, n_rows: int, repeats: int = 5) -> float:
-    """Return best-case avg microseconds per row for a fixed-argument predict_fn()."""
+    """Return best-case avg microseconds per row for a fixed-argument predict_fn()"""
     best_s = None
     for _ in range(max(1, repeats)):
         start = time.perf_counter()
@@ -266,7 +229,7 @@ class TL2CGenXGBPerTupleModel(Model):
 
     def _predict_pipeline_times(self, x: np.ndarray, scan_sizes: np.ndarray) -> np.ndarray:
         mask = np.any(x != 0, axis=1)
-        dmat = tl2cgen.DMatrix(x)  # type: ignore[attr-defined]
+        dmat = tl2cgen.DMatrix(x)
         pred_log = np.asarray(self.predictor.predict(dmat), dtype=np.float64).reshape(-1)
         pred = np.exp(-pred_log)
         scan_sizes = np.array(scan_sizes, copy=True)
@@ -303,13 +266,7 @@ def compile_t3_with_lleaves(t3_model: Model, cache_dir: Path) -> LleavesPerTuple
 
 
 def compile_xgboost_with_tl2cgen(regressor, cache_dir: Path) -> TL2CGenXGBPerTupleModel:
-    """Compile an XGBoost regressor into a shared library and load it as a tl2cgen Predictor.
-
-    Notes:
-    - This requires `tl2cgen` + `treelite`.
-    - On macOS, treelite may require OpenMP runtime discovery (e.g., `brew install libomp` and
-      `DYLD_LIBRARY_PATH=/opt/homebrew/opt/libomp/lib:$DYLD_LIBRARY_PATH`).
-    """
+    """Compile an XGBoost regressor into a shared library and load it as a tl2cgen Predictor."""
 
     if not _HAS_TL2CGEN:
         raise RuntimeError(
@@ -379,7 +336,6 @@ def main():
     t3_model = optimize_all(predicted_cardinalities)
     t3_train_s = time.perf_counter() - start
 
-    # Build a stable matrix for predictor-only benchmarks (no feature extraction inside timing)
     feature_mapper = FeatureMapper()
     train_benchmarks = DataCollector.collect_benchmarks(DatabaseManager.get_train_databases(), predicted_cardinalities)
     bench_x, _bench_y = _build_per_tuple_training_data(train_benchmarks, feature_mapper)

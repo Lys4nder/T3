@@ -1,23 +1,3 @@
-"""Compare original T3 model vs a CatBoost variant.
-
-This script intentionally reuses the *same* data pipeline as `main.py`:
-- training set: `DatabaseManager.get_train_databases()`
-- evaluation slices: same as `src/figures/accuracy_table.py`
-
-Run from repo root:
-
-  . venv/bin/activate
-  python -m src.compare_catboost
-
-To evaluate the compiled CatBoost variant:
-
-  T3_RUN_CAT_COMPILED=1 python -m src.compare_catboost
-
-If CatBoost isn't installed:
-
-  pip install catboost
-"""
-
 from __future__ import annotations
 
 import ctypes
@@ -307,7 +287,6 @@ def main():
     t3_model = optimize_all(predicted_cardinalities)
     t3_train_s = time.perf_counter() - start
 
-    # Build a stable matrix for predictor-only benchmarks
     feature_mapper = FeatureMapper()
     train_benchmarks = DataCollector.collect_benchmarks(DatabaseManager.get_train_databases(), predicted_cardinalities)
     bench_x, _bench_y = _build_per_tuple_training_data(train_benchmarks, feature_mapper)
