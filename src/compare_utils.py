@@ -61,6 +61,7 @@ def evaluate_model(model, predicted_cardinalities: bool = False) -> tuple[pd.Dat
                 "p50": float(np.median(q_errors)),
                 "p90": float(np.quantile(q_errors, 0.9)),
                 "Avg": float(q_errors.mean()),
+                "Max": float(q_errors.max()),
             }
         )
 

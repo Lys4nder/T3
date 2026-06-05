@@ -124,11 +124,13 @@ def train_catboost_per_tuple_model(predicted_cardinalities: bool = False) -> Cat
 
     reg = CatBoostRegressor(
         iterations=200,
-        learning_rate=0.1,
+        learning_rate=0.20,
         loss_function="RMSE",
         eval_metric="MAPE",
         grow_policy="SymmetricTree",
-        depth=5,
+        depth=6,
+        l2_leaf_reg=1.0,
+        border_count=128,
         random_seed=seed,
         thread_count=-1,
         verbose=False,

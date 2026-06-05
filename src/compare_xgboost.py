@@ -204,12 +204,12 @@ def train_xgboost_per_tuple_model(predicted_cardinalities: bool = False) -> XGBP
 
     reg = XGBRegressor(
         n_estimators=200,
-        learning_rate=0.1,
-        tree_method="hist",
+        learning_rate=0.05,
+        tree_method="approx",
         grow_policy="lossguide",
         max_leaves=31,
-        max_depth=0,
-        subsample=1.0,
+        max_depth=8,
+        subsample=0.8,
         colsample_bytree=1.0,
         objective="reg:squarederror",
         eval_metric="mape",
