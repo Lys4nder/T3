@@ -36,3 +36,4 @@ xgboost==3.2.0
 treelite==4.7.0
 treelite_runtime==3.9.1
 tl2cgen==1.0.0
+catboost>=1.2.0
