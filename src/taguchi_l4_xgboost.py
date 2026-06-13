@@ -1,9 +1,3 @@
-"""
-Taguchi L4 Hyperparameter Optimization for XGBoost.
-Runs 4 experiments using a 2-factor, 2-level design.
-Runs multiple seeds per experiment and aggregates results.
-"""
-
 import csv
 import time
 import numpy as np
@@ -31,7 +25,7 @@ FACTORS = {
     'max_depth': [4, 12],
 }
 
-# 5 trials (seeds) per experiment for stability
+# 5 seeds per experiment for stability
 SEEDS = [1,2,3,4,5]
 
 def main():

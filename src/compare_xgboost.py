@@ -52,7 +52,7 @@ except Exception:
 
 
 class XGBPerTupleModel(Model):
-    """Drop-in `Model` that mirrors `PerTupleTreeModel` but uses XGBoost for the per-tuple predictor."""
+    """Drop-in `Model` that mirrors `PerTupleTreeModel` but uses XGBoost for the per-tuple predictor"""
 
     def __init__(self, regressor):
         self.regressor = regressor
@@ -83,7 +83,7 @@ class XGBPerTupleModel(Model):
 
 
 class LleavesPerTupleModel(Model):
-    """Drop-in `Model` like `PerTupleTreeModel`, but uses compiled lleaves for prediction."""
+    """Drop-in `Model` like `PerTupleTreeModel`, but uses compiled lleaves for prediction"""
 
     def __init__(self, compiled_model):
         self.compiled_model = compiled_model
@@ -114,7 +114,7 @@ class LleavesPerTupleModel(Model):
 
 
 class TL2CGenXGBPerTupleModel(Model):
-    """Drop-in `Model` like `PerTupleTreeModel`, but uses a compiled tl2cgen predictor."""
+    """Drop-in `Model` like `PerTupleTreeModel`, but uses a compiled tl2cgen predictor"""
 
     def __init__(self, predictor):
         self.predictor = predictor
@@ -162,12 +162,12 @@ def compile_t3_with_lleaves(t3_model: Model, cache_dir: Path) -> LleavesPerTuple
 
 
 def compile_xgboost_with_tl2cgen(regressor, cache_dir: Path) -> TL2CGenXGBPerTupleModel:
-    """Compile an XGBoost regressor into a shared library and load it as a tl2cgen Predictor."""
+    """Compile an XGBoost regressor into a shared library and load it as a tl2cgen Predictor"""
 
     if not _HAS_TL2CGEN:
         raise RuntimeError(
             "tl2cgen/treelite not available. Install with: pip install tl2cgen\n"
-            "On macOS you may also need OpenMP runtime (libomp) and DYLD_LIBRARY_PATH set."
+            "On macOS you may also need OpenMP runtime (libomp) and DYLD_LIBRARY_PATH set"
         )
 
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -262,7 +262,7 @@ def main():
                 f"[Model-only] lleaves predict: {t3c_us_row:.3f} us/row (x{speedup:.2f} speedup)"
             )
         else:
-            print("\n[WARN] lleaves not installed — skipping compiled T3 evaluation.")
+            print("\n[WARN] lleaves not installed — skipping compiled T3 evaluation")
 
     if _HAS_XGBOOST:
         start = time.perf_counter()
@@ -303,9 +303,9 @@ def main():
                     f"[Model-only] tl2cgen predict: {xgbc_us_row:.3f} us/row (x{speedup:.2f} speedup)"
                 )
             else:
-                print("\n[WARN] tl2cgen/treelite not available — skipping compiled XGBoost evaluation.")
+                print("\n[WARN] tl2cgen/treelite not available — skipping compiled XGBoost evaluation")
     else:
-        print("\n[WARN] XGBoost not installed — skipping XGBoost comparison.")
+        print("\n[WARN] XGBoost not installed — skipping XGBoost comparison")
         print("       Install with: pip install xgboost")
 
 

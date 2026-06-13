@@ -47,7 +47,7 @@ def build_accuracy_slices(predicted_cardinalities: bool = False):
 
 
 def evaluate_model(model, predicted_cardinalities: bool = False) -> tuple[pd.DataFrame, float]:
-    """Returns (accuracy_table_df, avg_inference_ms_per_query)."""
+    """Returns (accuracy_table_df, avg_inference_ms_per_query)"""
 
     cache = QueryEstimationCache(model, predicted_cardinalities)
 
@@ -78,7 +78,7 @@ def evaluate_model(model, predicted_cardinalities: bool = False) -> tuple[pd.Dat
 
 
 def benchmark_batch_predict(predict_fn, x: np.ndarray, repeats: int = 5) -> float:
-    """Return best-case avg microseconds per row for predict_fn(x)."""
+    """Return best-case avg microseconds per row for predict_fn(x)"""
 
     best_s = None
     for _ in range(max(1, repeats)):
@@ -92,7 +92,7 @@ def benchmark_batch_predict(predict_fn, x: np.ndarray, repeats: int = 5) -> floa
 
 
 def benchmark_batch_predict_fixed(predict_fn, *, n_rows: int, repeats: int = 5) -> float:
-    """Return best-case avg microseconds per row for a fixed-argument predict_fn()."""
+    """Return best-case avg microseconds per row for a fixed-argument predict_fn()"""
 
     best_s = None
     for _ in range(max(1, repeats)):

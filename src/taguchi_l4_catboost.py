@@ -1,9 +1,3 @@
-"""
-Taguchi L4 Hyperparameter Optimization for CatBoost.
-Runs 4 experiments using a 2-factor, 2-level design.
-As per instructions, only 1 trial is used (Main Effects Plot for Means).
-"""
-
 import csv
 import time
 import numpy as np
@@ -53,7 +47,7 @@ def main():
         
         print(f"\nExperiment {exp_id}/4: lr={lr}, depth={dp}")
         
-        seed = 42 # Only 1 trial for L4
+        seed = 1 
         x_train, x_val, y_train, y_val = train_test_split(x_full, y_full, test_size=0.2, random_state=seed)
         
         reg = CatBoostRegressor(

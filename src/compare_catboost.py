@@ -34,7 +34,7 @@ except Exception:
 
 
 class CatBoostPerTupleModel(Model):
-    """Drop-in `Model` that mirrors `PerTupleTreeModel` but uses CatBoost for the per-tuple predictor."""
+    """Drop-in `Model` that mirrors `PerTupleTreeModel` but uses CatBoost for the per-tuple predictor"""
 
     def __init__(self, regressor):
         self.regressor = regressor
@@ -65,7 +65,7 @@ class CatBoostPerTupleModel(Model):
 
 
 class CompiledCatBoostPerTupleModel(Model):
-    """Drop-in `Model` that uses a natively compiled C++ CatBoost model."""
+    """Drop-in `Model` that uses a natively compiled C++ CatBoost model"""
 
     def __init__(self, lib_path: Path):
         self._feature_mapper = FeatureMapper()
@@ -235,7 +235,7 @@ def main():
             print(f"[Model-only] Compiled CatBoost predict: {catc_us_row:.3f} us/row (x{speedup:.2f} speedup)")
 
     else:
-        print("\n[WARN] CatBoost not installed — skipping CatBoost comparison.")
+        print("\n[WARN] CatBoost not installed — skipping CatBoost comparison")
         print("       Install with: pip install catboost")
 
 

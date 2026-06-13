@@ -1,9 +1,3 @@
-"""
-Taguchi L9 Hyperparameter Optimization for XGBoost.
-Runs 9 experiments defined by the L9 Orthogonal Array.
-For each experiment, it runs 3 trials (different random seeds) and records the Avg Q-Error on test set.
-"""
-
 import csv
 import time
 import numpy as np
@@ -19,7 +13,7 @@ from src.compare_xgboost import XGBPerTupleModel
 from src.training_data import build_per_tuple_training_data
 
 # L9 Orthogonal Array (Rows=Experiments, Cols=Factors)
-# Values are 1, 2, or 3 representing the level.
+# Values are 1, 2, or 3 representing the level
 L9_ARRAY = [
     [1, 1, 1, 1],
     [1, 2, 2, 2],
@@ -64,11 +58,9 @@ def main():
         print(f"\nExperiment {exp_id}/9: lr={lr}, max_depth={md}, tree_method={tm}, subsample={ss}")
         
         trial_errors = []
-        for trial, seed in enumerate([42, 100, 999], start=1):
+        for trial, seed in enumerate([1, 2, 3], start=1):
             x_train, x_val, y_train, y_val = train_test_split(x_full, y_full, test_size=0.2, random_state=seed)
             
-            # Note: exact tree method does not fully support subsample when n_jobs>1 easily in some versions,
-            # but we will try. Also exact does not use histogram, so memory usage might spike.
             reg = XGBRegressor(
                 n_estimators=200,
                 learning_rate=lr,

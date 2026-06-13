@@ -19,7 +19,7 @@ from src.compare_catboost import CatBoostPerTupleModel
 from src.training_data import build_per_tuple_training_data
 
 # L9 Orthogonal Array (Rows=Experiments, Cols=Factors)
-# Values are 1, 2, or 3 representing the level.
+# Values are 1, 2, or 3 representing the level
 L9_ARRAY = [
     [1, 1, 1, 1],
     [1, 2, 2, 2],
@@ -64,7 +64,7 @@ def main():
         print(f"\nExperiment {exp_id}/9: lr={lr}, depth={dp}, l2_leaf_reg={l2}, border_count={bc}")
         
         trial_errors = []
-        for trial, seed in enumerate([42, 100, 999], start=1):
+        for trial, seed in enumerate([1, 2, 3], start=1):
             x_train, x_val, y_train, y_val = train_test_split(x_full, y_full, test_size=0.2, random_state=seed)
             
             reg = CatBoostRegressor(

@@ -208,7 +208,7 @@ def main() -> int:
     }
     _write_json(run_dir / "meta.json", meta)
 
-    # Pre-build benchmark matrix for model-only latency tests
+    # pre-build benchmark matrix for model-only latency tests
     feature_mapper = FeatureMapper()
     train_benchmarks = DataCollector.collect_benchmarks(DatabaseManager.get_train_databases(), predicted_cardinalities)
     bench_x, _ = _build_per_tuple_training_data(train_benchmarks, feature_mapper)
@@ -368,8 +368,6 @@ def main() -> int:
     ]
     _write_csv(run_dir / "per_query.csv", per_query_rows, per_query_fields)
 
-    # Save a compact human-readable report
-    # print(f"\\n=== Writing report.md to {run_dir} ===")
     report_lines = []
     report_lines.append("# Comparison Report (T3 vs XGBoost vs CatBoost)")
     report_lines.append("")
